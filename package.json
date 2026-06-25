@@ -1,13 +1,13 @@
 {
   "name": "print-server",
   "version": "1.0.0",
-  "description": "ESC/POS print server",
   "main": "dist/index.js",
   "license": "MIT",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "nodemon --exec ts-node index.ts"
+    "dev": "nodemon --exec ts-node index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "engines": {
     "node": "18.x || 20.x || 22.x"
