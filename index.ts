@@ -1,68 +1,72 @@
-import express, { Request, Response } from 'express';
-import cors from 'cors';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { exec } from 'child_process';
+import express, { Request, Response } from "express"
+import { WebSocketServer, WebSocket } from "ws"
+import http from "http"
 
-const app = express();
-const PORT = parseInt(process.env.PORT || "3001", 10);
-const PRINTER_SHARE = process.env.PRINTER_SHARE || "TDPRINTER";
+const app = express()
+app.use(express.json({ limit: "10mb" }))
 
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+const server = http.createServer(app)
+const wss = new WebSocketServer({ server, path: "/agent" })
 
-function printRawBuffer(buffer: Buffer): Promise<void> {
-    return new Promise((resolve, reject) => {
-        const tempFile = path.join(os.tmpdir(), `receipt-${Date.now()}.prn`);
-        fs.writeFileSync(tempFile, buffer);
-        const target = `\\\\localhost\\${PRINTER_SHARE}`;
-        exec(`copy /b "${tempFile}" "${target}"`, (error) => {
-            fs.unlink(tempFile, () => {});
-            if (error) {
-                reject(error);
-            } else {
-                resolve();
-            }
-        });
-    });
-}
+const connectedAgents = new Map<string, WebSocket>()
 
-app.post("/api/print", async (req: Request, res: Response) => {
-    try {
-        const { receiptData, paymentMethod } = req.body;
-        console.log("=== RECEIVED REQUEST ===");
-        console.log("Payment method:", paymentMethod);
+const RELAY_SECRET = process.env.RELAY_SECRET
 
-        const buffer = Buffer.from(receiptData);
-        const isCash = paymentMethod && paymentMethod.toLowerCase() === "cash";
+wss.on("connection", (ws: WebSocket, req) => {
+    const url = new URL(req.url || "", "http://localhost")
+    const agentId = url.searchParams.get("agentId")
+    const token = url.searchParams.get("token")
 
-        if (isCash) {
-            const drawerCommand = Buffer.from([0x1b, 0x70, 0x00, 0x19, 0x19]);
-            const fullBuffer = Buffer.concat([drawerCommand, buffer]);
-            await printRawBuffer(fullBuffer);
-            console.log("Printed receipt and opened drawer");
-        } else {
-            await printRawBuffer(buffer);
-            console.log("Printed receipt only");
-        }
-
-        res.json({ success: true, message: "Receipt printed successfully" });
-    } catch (error: any) {
-        console.error("Print error:", error);
-        res.status(500).json({ success: false, error: error.message || "Unknown error" });
+    if (token !== RELAY_SECRET || !agentId) {
+        ws.close(4001, "Unauthorized")
+        return
     }
-});
 
-app.get("/api/health", (_req: Request, res: Response) => {
+    connectedAgents.set(agentId, ws)
+    console.log(`Agent connected: ${agentId}`)
+
+    ws.on("close", () => {
+        connectedAgents.delete(agentId)
+        console.log(`Agent disconnected: ${agentId}`)
+    })
+
+    ws.on("message", (raw) => {
+        try {
+            const msg = JSON.parse(raw.toString())
+            console.log(`Ack from ${agentId}:`, msg)
+        } catch {
+            // ignore malformed messages
+        }
+    })
+})
+
+app.post("/print/:agentId", (req: Request, res: Response) => {
+    const { agentId } = req.params
+    const { receiptData, paymentMethod } = req.body
+    const auth = req.headers.authorization
+
+    if (auth !== `Bearer ${RELAY_SECRET}`) {
+        return res.status(401).json({ success: false, error: "Unauthorized" })
+    }
+
+    const agent = connectedAgents.get(agentId)
+    if (!agent || agent.readyState !== WebSocket.OPEN) {
+        return res.status(503).json({ success: false, error: "Printer agent offline for this address" })
+    }
+
+    agent.send(JSON.stringify({ type: "print", jobId: Date.now().toString(), receiptData, paymentMethod }))
+    res.json({ success: true, message: "Job sent to printer agent" })
+})
+
+app.get("/health", (_req: Request, res: Response) => {
     res.json({
         status: "ok",
-        printerShare: PRINTER_SHARE,
-        timestamp: new Date().toISOString(),
-    });
-});
+        connectedAgents: Array.from(connectedAgents.keys()),
+    })
+})
 
-app.listen(PORT, "127.0.0.1", () => {
-    console.log(`Print server running on http://127.0.0.1:${PORT}`);
-    console.log(`Printer share: \\\\localhost\\${PRINTER_SHARE}`);
-});
+const PORT = parseInt(process.env.PORT || "8080", 10)
+
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Relay listening on 0.0.0.0:${PORT}`)
+})
