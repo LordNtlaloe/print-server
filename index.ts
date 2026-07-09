@@ -12,7 +12,7 @@ const connectedAgents = new Map<string, WebSocket>()
 
 const RELAY_SECRET = process.env.RELAY_SECRET
 
-wss.on("connection", (ws: WebSocket, req) => {
+wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
     const url = new URL(req.url || "", "http://localhost")
     const agentId = url.searchParams.get("agentId")
     const token = url.searchParams.get("token")
@@ -30,7 +30,7 @@ wss.on("connection", (ws: WebSocket, req) => {
         console.log(`Agent disconnected: ${agentId}`)
     })
 
-    ws.on("message", (raw) => {
+    ws.on("message", (raw: Buffer) => {
         try {
             const msg = JSON.parse(raw.toString())
             console.log(`Ack from ${agentId}:`, msg)
